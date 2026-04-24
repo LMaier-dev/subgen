@@ -13,7 +13,7 @@ services:
       - WHISPER__NUM_WORKERS=1
       - LOG_LEVEL=info
       - ENABLE_UI=false
-      - PRELOAD_MODELS=["Systran/faster-distil-whisper-large-v3"]
+      - PRELOAD_MODELS=["Systran/faster-whisper-medium"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -44,7 +44,7 @@ services:
       - WYOMING_LOG_LEVEL=INFO
       - WYOMING_LANGUAGES=de
       - STT_OPENAI_URL=http://speaches:8000/v1
-      - STT_MODELS=Systran/faster-distil-whisper-large-v3
+      - STT_MODELS=Systran/faster-whisper-medium
       - STT_BACKEND=SPEACHES
       - STT_PROMPT=${WHISPER_PROMPT}
     depends_on:
@@ -63,7 +63,7 @@ services:
     restart: unless-stopped
     environment:
       - WHISPER_API_URL=http://speaches:8000/v1/audio/transcriptions
-      - WHISPER_API_MODEL=Systran/faster-distil-whisper-large-v3
+      - WHISPER_API_MODEL=Systran/faster-whisper-medium
       - WHISPER_API_LANGUAGE=de
       - WEBHOOKPORT=9000
       - CONCURRENT_TRANSCRIPTIONS=2
