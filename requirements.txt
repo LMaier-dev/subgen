@@ -7,3 +7,4 @@ uvicorn
 python-multipart
 ffmpeg-python
 watchdog
+httpx

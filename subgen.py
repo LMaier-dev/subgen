@@ -66,6 +66,7 @@ from stable_whisper import Segment
 import requests
 import av
 import ffmpeg
+import httpx
 import ast
 from watchdog.observers.polling import PollingObserver as Observer
 from watchdog.events import FileSystemEventHandler
@@ -116,6 +117,11 @@ whisper_model = os.getenv('WHISPER_MODEL', 'medium')
 whisper_threads = int(os.getenv('WHISPER_THREADS', 4))
 concurrent_transcriptions = int(os.getenv('CONCURRENT_TRANSCRIPTIONS', 2))
 transcribe_device = os.getenv('TRANSCRIBE_DEVICE', 'cpu')
+
+# External Whisper API (when set, delegates transcription to a remote OpenAI-compatible API)
+whisper_api_url = os.getenv('WHISPER_API_URL', '')
+whisper_api_model = os.getenv('WHISPER_API_MODEL', 'Systran/faster-whisper-large-v3')
+whisper_api_language = os.getenv('WHISPER_API_LANGUAGE', '')
 
 # Processing Control - with backwards compatibility
 procaddedmedia = get_env_with_fallback('PROCESS_ADDED_MEDIA', 'PROCADDEDMEDIA', True, convert_to_bool)
@@ -549,6 +555,8 @@ def webui():
 
 @app.get("/status")
 def status():
+    if whisper_api_url:
+        return {"version": f"Subgen {subgen_version} [External API: {whisper_api_url}] ({docker_status})"}
     return {"version": f"Subgen {subgen_version}, stable-ts {stable_whisper.__version__}, faster-whisper {faster_whisper.__version__} ({docker_status})"}
 
 @app.post("/tautulli")
@@ -905,13 +913,13 @@ def apply_timestamp_offset(result, offset: float) -> None:
 
 def asr_task_worker(task_data: dict) -> None:
     """
-    Worker function that processes ASR tasks from the queue. 
+    Worker function that processes ASR tasks from the queue.
     Called by transcription_worker when task type is 'asr'.
     """
     result = None
     task_id = task_data.get('path', 'unknown')
     result_container = task_data.get('result_container')
-    
+
     try:
         task = task_data['task']
         language = task_data['language']
@@ -919,13 +927,18 @@ def asr_task_worker(task_data: dict) -> None:
         initial_prompt = task_data.get('initial_prompt')
         file_content = task_data['audio_content']
         encode = task_data['encode']
-        
+        output_format = task_data.get('output', 'srt')
+
+        if whisper_api_url:
+            _asr_task_via_api(task, language, video_file, file_content, output_format, result_container, task_id)
+            return
+
         start_model()
 
         args = {}
         display_name = os.path.basename(video_file) if video_file else task_id
         args['progress_callback'] = ProgressHandler(display_name)
-        
+
         # Handle audio encoding
         if encode:
             args['audio'] = file_content
@@ -937,32 +950,66 @@ def asr_task_worker(task_data: dict) -> None:
             args['regroup'] = custom_regroup
 
         args.update(kwargs)
-        
+
         # Detect audio start_time offset from source file (if accessible)
         audio_offset = get_audio_start_time(video_file) if video_file else 0.0
-        
+
         # Perform transcription
         result = model.transcribe(task=task, language=language, **args, verbose=None)
-        
+
         # Apply audio start_time offset to compensate for container timing
         # Whisper ignores silence padding (adelay) from Bazarr, so timestamps
         # are relative to audio stream start, not container start
         if audio_offset > 0:
             apply_timestamp_offset(result, audio_offset)
-        
+
         appendLine(result)
-        
+
         # Set result for blocking endpoint
         if result_container:
             result_container.set_result(result.to_srt_vtt(filepath=None, word_level=word_level_highlight))
 
     except Exception as e:
         logging.error(f"Error processing ASR (ID: {task_id}): {e}", exc_info=True)
-        if result_container: 
+        if result_container:
             result_container.set_error(str(e))
-    
+
     finally:
         delete_model()
+
+
+def _asr_task_via_api(task: str, language: str, video_file: str, file_content: bytes, output_format: str, result_container, task_id: str) -> None:
+    """Delegates an ASR task to the external Whisper API."""
+    try:
+        lang = language or whisper_api_language
+        filename = os.path.basename(video_file) if video_file else "audio.wav"
+
+        api_endpoint = whisper_api_url
+        if task == "translate":
+            api_endpoint = whisper_api_url.replace("/transcriptions", "/translations")
+
+        response_format = output_format if output_format in ("srt", "vtt", "json", "text") else "srt"
+        data = {"model": whisper_api_model, "response_format": response_format}
+        if lang:
+            data["language"] = lang
+
+        logging.info(f"ASR task {task_id}: sending to external API at {api_endpoint}")
+
+        with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
+            response = client.post(
+                api_endpoint,
+                files={"file": (filename, file_content, "audio/wav")},
+                data=data,
+            )
+            response.raise_for_status()
+
+        if result_container:
+            result_container.set_result(response.text)
+
+    except Exception as e:
+        logging.error(f"Error in external API ASR (ID: {task_id}): {e}", exc_info=True)
+        if result_container:
+            result_container.set_error(str(e))
 
 async def get_audio_chunk(audio_file, offset=detect_language_offset, length=detect_language_length, sample_rate=16000, audio_format=np.int16):
     """
@@ -1275,6 +1322,8 @@ def extract_audio_segment_to_memory(input_file, start_time, duration):
 
 def start_model():
     global model
+    if whisper_api_url:
+        return
     with model_load_lock:
         if model is None:
             logging.debug("Model was purged, need to re-create")
@@ -1341,6 +1390,9 @@ def delete_model():
     Only schedules a cleanup timer if the system is actually idle.
     This prevents unnecessary timer resets when a large batch is being processed.
     """
+    if whisper_api_url:
+        return
+
     global active_direct_tasks
     # 1. If we aren't supposed to clear VRAM, don't bother with timers at all.
     if not clear_vram_on_complete:
@@ -1393,37 +1445,42 @@ def send_completion_webhook(source_file_path: str, subtitle_file_path: str, lang
         logging.error(f"Failed to send completion webhook: {e}")
 
 def gen_subtitles(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE) -> None:
-    """Generates subtitles for a video file. 
+    """Generates subtitles for a video file.
 
     Args:
-        file_path: str - The path to the video file. 
+        file_path: str - The path to the video file.
         transcription_type: str - The type of transcription or translation to perform.
-        force_language: str - The language to force for transcription or translation. Default is None. 
+        force_language: str - The language to force for transcription or translation. Default is None.
     """
 
     try:
-        start_model()
-        
-        # Check if the file is an audio file before trying to extract audio 
         file_name, file_extension = os.path.splitext(file_path)
         is_audio_file = isAudioFileExtension(file_extension)
-        
+
+        if whisper_api_url:
+            _gen_subtitles_via_api(file_path, file_name, is_audio_file, transcription_type, force_language)
+            return
+
+        start_model()
+
+        # Check if the file is an audio file before trying to extract audio
+
         data = file_path
         # Extract audio from the file if it has multiple audio tracks
         extracted_audio_file = handle_multiple_audio_tracks(file_path, force_language)
         # handle_multiple_audio_tracks now returns bytes directly
         if extracted_audio_file:
             data = extracted_audio_file
-        
+
         args = {}
         display_name = os.path.basename(file_path)
         args['progress_callback'] = ProgressHandler(display_name)
-            
+
         if custom_regroup and custom_regroup.lower() != 'default':
             args['regroup'] = custom_regroup
-            
+
         args.update(kwargs)
-        
+
         result = model.transcribe(data, language=force_language.to_iso_639_1(), task=transcription_type, verbose=None, **args)
 
         appendLine(result)
@@ -1438,7 +1495,7 @@ def gen_subtitles(file_path: str, transcription_type: str, force_language: Langu
         else:
             subtitle_file_path = name_subtitle(file_path, output_language)
             result.to_srt_vtt(subtitle_file_path, word_level=word_level_highlight)
-            
+
         # Trigger the downstream webhook
         send_completion_webhook(file_path, subtitle_file_path, output_language, transcription_type)
 
@@ -1456,6 +1513,102 @@ def gen_subtitles(file_path: str, transcription_type: str, force_language: Langu
 
     finally:
         delete_model()
+
+
+def _gen_subtitles_via_api(file_path: str, file_name: str, is_audio_file: bool, transcription_type: str, force_language: LanguageCode) -> None:
+    """Delegates subtitle generation to an external OpenAI-compatible Whisper API."""
+    try:
+        lang = force_language.to_iso_639_1() if force_language != LanguageCode.NONE else whisper_api_language
+        response_format = "srt"
+
+        audio_data = _prepare_audio_for_api(file_path, force_language)
+        filename = os.path.basename(file_path)
+
+        api_endpoint = whisper_api_url
+        if transcription_type == "translate":
+            api_endpoint = whisper_api_url.replace("/transcriptions", "/translations")
+
+        data = {"model": whisper_api_model, "response_format": response_format}
+        if lang:
+            data["language"] = lang
+
+        logging.info(f"Sending {filename} to external Whisper API at {api_endpoint}")
+
+        with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
+            response = client.post(
+                api_endpoint,
+                files={"file": (filename, audio_data, "audio/wav")},
+                data=data,
+            )
+            response.raise_for_status()
+
+        srt_content = response.text
+
+        if is_audio_file and lrc_for_audio_files:
+            subtitle_file_path = file_name + '.lrc'
+            _srt_to_lrc(srt_content, subtitle_file_path)
+        else:
+            output_language = LanguageCode.from_string(lang) if lang else LanguageCode.from_string("und")
+            subtitle_file_path = name_subtitle(file_path, output_language)
+            with open(subtitle_file_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+
+        logging.info(f"Subtitles written to {subtitle_file_path}")
+        output_language = LanguageCode.from_string(lang) if lang else LanguageCode.from_string("und")
+        send_completion_webhook(file_path, subtitle_file_path, output_language, transcription_type)
+
+        with task_results_lock:
+            if file_path in task_results:
+                task_results[file_path].set_result(srt_content)
+
+    except Exception as e:
+        logging.error(f"Error in external API transcription of {file_path}: {e}", exc_info=True)
+        with task_results_lock:
+            if file_path in task_results:
+                task_results[file_path].set_error(str(e))
+
+
+def _prepare_audio_for_api(file_path: str, force_language: LanguageCode) -> bytes:
+    """Extract audio from a media file and return as bytes suitable for API upload."""
+    extracted = handle_multiple_audio_tracks(file_path, force_language)
+    if extracted:
+        return extracted
+
+    try:
+        out, _ = (
+            ffmpeg.input(file_path)
+            .output("pipe:", format="wav", acodec="pcm_s16le", ac=1, ar="16000")
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        return out
+    except ffmpeg.Error as e:
+        logging.error(f"FFmpeg error preparing audio for API: {e.stderr.decode()}")
+        raise
+
+
+def _srt_to_lrc(srt_content: str, output_path: str) -> None:
+    """Convert SRT text content to LRC format."""
+    import re
+    lines = srt_content.strip().split("\n")
+    with open(output_path, "w", encoding="utf-8") as f:
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if "-->" in line:
+                time_match = re.match(r'(\d{2}):(\d{2}):(\d{2})[,.](\d{3})', line)
+                if time_match:
+                    h, m, s, ms = int(time_match.group(1)), int(time_match.group(2)), int(time_match.group(3)), int(time_match.group(4))
+                    total_min = h * 60 + m
+                    fraction = ms // 10
+                    i += 1
+                    text_parts = []
+                    while i < len(lines) and lines[i].strip() and "-->" not in lines[i] and not lines[i].strip().isdigit():
+                        text_parts.append(lines[i].strip())
+                        i += 1
+                    text = " ".join(text_parts).replace("\n", " ")
+                    f.write(f"[{total_min:02d}:{s:02d}.{fraction:02d}]{text}\n")
+                    continue
+            i += 1
         
 def define_subtitle_language_naming(language: LanguageCode, type):
     """
@@ -2339,7 +2492,10 @@ def transcribe_existing(transcribe_folders, forceLanguage : LanguageCode | None 
 if __name__ == "__main__":
     import uvicorn
     logging.info(f"Subgen v{subgen_version}")
-    logging.info(f"Threads: {str(whisper_threads)}, Concurrent transcriptions: {str(concurrent_transcriptions)}")
-    logging.info(f"Transcribe device: {transcribe_device}, Model: {whisper_model}")
+    if whisper_api_url:
+        logging.info(f"External Whisper API mode: {whisper_api_url} (model: {whisper_api_model})")
+    else:
+        logging.info(f"Threads: {str(whisper_threads)}, Concurrent transcriptions: {str(concurrent_transcriptions)}")
+        logging.info(f"Transcribe device: {transcribe_device}, Model: {whisper_model}")
     os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
     uvicorn.run("__main__:app", host="0.0.0.0", port=int(webhookport), reload=reload_script_on_change, use_colors=True)
