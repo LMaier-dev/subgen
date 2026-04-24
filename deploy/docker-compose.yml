@@ -1,0 +1,99 @@
+services:
+  # === CORE: Single Whisper engine on NVIDIA GPU ===
+  speaches:
+    container_name: speaches
+    image: ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - STT_MODEL_TTL=-1
+      - WHISPER__INFERENCE_DEVICE=cuda
+      - WHISPER__COMPUTE_TYPE=int8_float16
+      - WHISPER__NUM_WORKERS=2
+      - LOG_LEVEL=info
+      - ENABLE_UI=false
+      - PRELOAD_MODELS=["Systran/faster-whisper-large-v3"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    volumes:
+      - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
+    networks:
+      - whisper_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # === BRIDGE: Wyoming protocol for Home Assistant ===
+  wyoming-openai:
+    container_name: wyoming-openai
+    image: ghcr.io/roryeckel/wyoming_openai:latest
+    restart: unless-stopped
+    ports:
+      - "10300:10300"
+    environment:
+      - WYOMING_URI=tcp://0.0.0.0:10300
+      - WYOMING_LOG_LEVEL=INFO
+      - WYOMING_LANGUAGES=de
+      - STT_OPENAI_URL=http://speaches:8000/v1
+      - STT_MODELS=Systran/faster-whisper-large-v3
+      - STT_BACKEND=SPEACHES
+      - STT_PROMPT=${WHISPER_PROMPT}
+    depends_on:
+      speaches:
+        condition: service_healthy
+    networks:
+      - whisper_net
+
+  # === SUBTITLES: Bazarr ASR + Plex/Jellyfin webhooks ===
+  subgen:
+    container_name: subgen
+    tty: true
+    build:
+      context: ..
+      dockerfile: Dockerfile.cpu
+    restart: unless-stopped
+    environment:
+      - WHISPER_API_URL=http://speaches:8000/v1/audio/transcriptions
+      - WHISPER_API_MODEL=Systran/faster-whisper-large-v3
+      - WHISPER_API_LANGUAGE=de
+      - WEBHOOKPORT=9000
+      - CONCURRENT_TRANSCRIPTIONS=2
+      - WORD_LEVEL_HIGHLIGHT=False
+      - DEBUG=True
+      - USE_PATH_MAPPING=False
+      - LRC_FOR_AUDIO_FILES=True
+      - CUSTOM_REGROUP=cm_sl=84_sl=42++++++1
+      - NAMESUBLANG=aa
+      - SKIPIFINTERNALSUBLANG=eng
+      - PROCADDEDMEDIA=True
+      - PROCMEDIAONPLAY=False
+      - PLEXTOKEN=${PLEX_TOKEN}
+      - PLEXSERVER=${PLEX_SERVER}
+      - JELLYFINTOKEN=${JELLYFIN_TOKEN}
+      - JELLYFINSERVER=${JELLYFIN_SERVER}
+    volumes:
+      - "${TV}:/tv"
+      - "${MOVIES}:/movies"
+    ports:
+      - "9000:9000"
+    depends_on:
+      speaches:
+        condition: service_healthy
+    networks:
+      - whisper_net
+
+volumes:
+  hf-hub-cache:
+
+networks:
+  whisper_net:
+    driver: bridge
