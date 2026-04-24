@@ -1,5 +1,7 @@
 # Subgen
 
+> **Fork note:** This fork adds external Whisper API support (`WHISPER_API_URL`). See [`deploy/README.md`](deploy/README.md) for a combo setup that runs speaches (GPU) + Wyoming (Home Assistant) + subgen in a single docker-compose with the model loaded only once.
+
 [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/donate/?hosted_button_id=SU4QQP6LH5PF6)
 <img src="https://raw.githubusercontent.com/McCloudS/subgen/main/icon.png" width="200">
 
