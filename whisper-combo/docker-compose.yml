@@ -9,7 +9,7 @@ services:
     environment:
       - STT_MODEL_TTL=-1
       - WHISPER__INFERENCE_DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=int8_float16
+      - WHISPER__COMPUTE_TYPE=float16
       - WHISPER__NUM_WORKERS=1
       - LOG_LEVEL=info
       - ENABLE_UI=false
