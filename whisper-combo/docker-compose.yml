@@ -9,7 +9,7 @@ services:
     environment:
       - STT_MODEL_TTL=-1
       - WHISPER__INFERENCE_DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=int8
+      - WHISPER__COMPUTE_TYPE=int8_float32
       - WHISPER__NUM_WORKERS=2
       - UNSTABLE_ORT_OPTS__EXCLUDE_PROVIDERS=["TensorrtExecutionProvider","CUDAExecutionProvider"]
       - LOG_LEVEL=info
