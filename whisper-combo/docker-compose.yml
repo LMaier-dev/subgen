@@ -43,7 +43,7 @@ services:
     environment:
       - WYOMING_URI=tcp://0.0.0.0:10300
       - WYOMING_LOG_LEVEL=INFO
-      - WYOMING_LANGUAGES=de
+      - WYOMING_LANGUAGES=de en
       - STT_OPENAI_URL=http://speaches:8000/v1
       - STT_MODELS=Systran/faster-whisper-large-v3
       - STT_BACKEND=SPEACHES
