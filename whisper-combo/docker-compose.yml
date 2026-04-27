@@ -14,7 +14,7 @@ services:
       - UNSTABLE_ORT_OPTS__EXCLUDE_PROVIDERS=["TensorrtExecutionProvider","CUDAExecutionProvider"]
       - LOG_LEVEL=info
       - ENABLE_UI=false
-      - PRELOAD_MODELS=["Systran/faster-whisper-large-v3"]
+      - PRELOAD_MODELS=["Systran/faster-whisper-large-v3","speaches-ai/Kokoro-82M-v1.0-ONNX"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -48,6 +48,9 @@ services:
       - STT_MODELS=Systran/faster-whisper-large-v3
       - STT_BACKEND=SPEACHES
       - STT_PROMPT=${WHISPER_PROMPT}
+      - TTS_OPENAI_URL=http://speaches:8000/v1
+      - TTS_MODELS=speaches-ai/Kokoro-82M-v1.0-ONNX
+      - TTS_BACKEND=SPEACHES
     depends_on:
       speaches:
         condition: service_healthy
