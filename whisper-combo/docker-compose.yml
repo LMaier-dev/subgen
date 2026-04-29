@@ -33,9 +33,9 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # === TTS: Pocket TTS (CPU, German+English, OpenAI-compatible) ===
-  pockettts:
-    container_name: pockettts
+  # === TTS: Pocket TTS German (CPU, OpenAI-compatible) ===
+  pockettts-de:
+    container_name: pockettts-de
     build:
       context: ../pocket-tts-openai_streaming_server
       dockerfile: Dockerfile
@@ -54,7 +54,7 @@ services:
       - POCKET_TTS_VOICE_CACHE_DIR=/app/voice_cache
     volumes:
       - pockettts-cache:/home/pockettts/.cache/huggingface
-      - pockettts-voice-cache:/app/voice_cache
+      - pockettts-voice-cache-de:/app/voice_cache
     deploy:
       resources:
         limits:
@@ -70,9 +70,43 @@ services:
     networks:
       - whisper_net
 
-  # === BRIDGE: Wyoming protocol for Home Assistant ===
-  wyoming-openai:
-    container_name: wyoming-openai
+  # === TTS: Pocket TTS English (CPU, OpenAI-compatible) ===
+  pockettts-en:
+    container_name: pockettts-en
+    image: pockettts-openai-server:latest
+    restart: unless-stopped
+    ports:
+      - "49113:49112"
+    environment:
+      - POCKET_TTS_HOST=0.0.0.0
+      - POCKET_TTS_PORT=49112
+      - POCKET_TTS_VOICES_DIR=/app/voices
+      - POCKET_TTS_LOG_LEVEL=INFO
+      - POCKET_TTS_STREAM_DEFAULT=true
+      - POCKET_TTS_LANGUAGE=english
+      - POCKET_TTS_QUANTIZE=false
+      - POCKET_TTS_VOICE_CACHE_DIR=/app/voice_cache
+    volumes:
+      - pockettts-cache:/home/pockettts/.cache/huggingface
+      - pockettts-voice-cache-en:/app/voice_cache
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:49112/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - whisper_net
+
+  # === BRIDGE: Wyoming German pipeline (STT + TTS) ===
+  wyoming-openai-de:
+    container_name: wyoming-openai-de
     image: ghcr.io/roryeckel/wyoming_openai:latest
     restart: unless-stopped
     ports:
@@ -80,12 +114,12 @@ services:
     environment:
       - WYOMING_URI=tcp://0.0.0.0:10300
       - WYOMING_LOG_LEVEL=INFO
-      - WYOMING_LANGUAGES=de en
+      - WYOMING_LANGUAGES=de
       - STT_OPENAI_URL=http://speaches:8000/v1
       - STT_MODELS=Systran/faster-whisper-large-v3
       - STT_BACKEND=SPEACHES
       - STT_PROMPT=${WHISPER_PROMPT}
-      - TTS_OPENAI_URL=http://pockettts:49112/v1
+      - TTS_OPENAI_URL=http://pockettts-de:49112/v1
       - TTS_MODELS=german_24l
       - TTS_BACKEND=OPENAI
       # --- Kokoro fallback (uncomment to switch back) ---
@@ -95,10 +129,69 @@ services:
     depends_on:
       speaches:
         condition: service_healthy
-      pockettts:
+      pockettts-de:
         condition: service_healthy
     networks:
       - whisper_net
+
+  # === BRIDGE: Wyoming English pipeline (STT + TTS) ===
+  wyoming-openai-en:
+    container_name: wyoming-openai-en
+    image: ghcr.io/roryeckel/wyoming_openai:latest
+    restart: unless-stopped
+    ports:
+      - "10301:10300"
+    environment:
+      - WYOMING_URI=tcp://0.0.0.0:10300
+      - WYOMING_LOG_LEVEL=INFO
+      - WYOMING_LANGUAGES=en
+      - STT_OPENAI_URL=http://speaches:8000/v1
+      - STT_MODELS=Systran/faster-whisper-large-v3
+      - STT_BACKEND=SPEACHES
+      - STT_PROMPT=${WHISPER_PROMPT_EN}
+      - TTS_OPENAI_URL=http://pockettts-en:49112/v1
+      - TTS_MODELS=english
+      - TTS_BACKEND=OPENAI
+      # --- Kokoro fallback (uncomment to switch back) ---
+      # - TTS_OPENAI_URL=http://speaches:8000/v1
+      # - TTS_MODELS=speaches-ai/Kokoro-82M-v1.0-ONNX
+      # - TTS_BACKEND=SPEACHES
+    depends_on:
+      speaches:
+        condition: service_healthy
+      pockettts-en:
+        condition: service_healthy
+    networks:
+      - whisper_net
+
+  # === TTS: XTTS v2 voice cloning (GPU, standalone test) ===
+  xtts:
+    container_name: xtts-api-server
+    image: daswer123/xtts-api-server
+    restart: unless-stopped
+    ports:
+      - "8020:8020"
+    volumes:
+      - xtts-speakers:/xtts-server/speakers
+      - xtts-output:/xtts-server/output
+      - xtts-models:/xtts-server/models
+    command: >
+      bash -c "python3 -m xtts_api_server
+      --listen
+      -p 8020
+      -sf '/xtts-server/speakers'
+      -o '/xtts-server/output'
+      -mf '/xtts-server/models'
+      --lowvram"
+    networks:
+      - whisper_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # === SUBTITLES: Bazarr ASR + Plex/Jellyfin webhooks ===
   subgen:
@@ -141,7 +234,11 @@ services:
 volumes:
   hf-hub-cache:
   pockettts-cache:
-  pockettts-voice-cache:
+  pockettts-voice-cache-de:
+  pockettts-voice-cache-en:
+  xtts-speakers:
+  xtts-output:
+  xtts-models:
 
 networks:
   whisper_net:
