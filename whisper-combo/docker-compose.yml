@@ -49,7 +49,7 @@ services:
       - POCKET_TTS_VOICES_DIR=/app/voices
       - POCKET_TTS_LOG_LEVEL=INFO
       - POCKET_TTS_STREAM_DEFAULT=true
-      - POCKET_TTS_LANGUAGE=german_24l
+      - POCKET_TTS_LANGUAGE=german
       - POCKET_TTS_QUANTIZE=false
       - POCKET_TTS_VOICE_CACHE_DIR=/app/voice_cache
       - HF_TOKEN=${HF_TOKEN}
@@ -88,7 +88,7 @@ services:
       - STT_BACKEND=SPEACHES
       - STT_PROMPT=${WHISPER_PROMPT}
       - TTS_OPENAI_URL=http://pockettts-de:49112/v1
-      - TTS_MODELS=german_24l
+      - TTS_MODELS=german
       - TTS_BACKEND=OPENAI
       - TTS_VOICES=alba anna azelma bernd_das_brot cosette eponine fantine javert jean marius vera
     depends_on:
