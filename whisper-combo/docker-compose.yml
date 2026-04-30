@@ -52,6 +52,7 @@ services:
       - POCKET_TTS_LANGUAGE=german_24l
       - POCKET_TTS_QUANTIZE=false
       - POCKET_TTS_VOICE_CACHE_DIR=/app/voice_cache
+      - HF_TOKEN=${HF_TOKEN}
     volumes:
       - pockettts-cache:/home/pockettts/.cache/huggingface
       - pockettts-voice-cache-de:/app/voice_cache
