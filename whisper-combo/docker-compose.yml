@@ -126,35 +126,6 @@ services:
     networks:
       - whisper_net
 
-  # === TTS: XTTS v2 voice cloning (GPU, standalone test) ===
-  xtts:
-    container_name: xtts-api-server
-    image: daswer123/xtts-api-server
-    restart: unless-stopped
-    ports:
-      - "8020:8020"
-    volumes:
-      - xtts-speakers:/xtts-server/speakers
-      - xtts-output:/xtts-server/output
-      - xtts-models:/xtts-server/models
-    command: >
-      bash -c "python3 -m xtts_api_server
-      --listen
-      -p 8020
-      -sf '/xtts-server/speakers'
-      -o '/xtts-server/output'
-      -mf '/xtts-server/models'
-      --lowvram"
-    networks:
-      - whisper_net
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
   # === SUBTITLES: Bazarr ASR + Plex/Jellyfin webhooks ===
   subgen:
     container_name: subgen
@@ -197,9 +168,6 @@ volumes:
   hf-hub-cache:
   pockettts-cache:
   pockettts-voice-cache-de:
-  xtts-speakers:
-  xtts-output:
-  xtts-models:
 
 networks:
   whisper_net:
