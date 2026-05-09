@@ -10,7 +10,7 @@ services:
       - STT_MODEL_TTL=-1
       - WHISPER__INFERENCE_DEVICE=cuda
       - WHISPER__COMPUTE_TYPE=int8_float32
-      - WHISPER__NUM_WORKERS=2
+      - WHISPER__NUM_WORKERS=4
       - UNSTABLE_ORT_OPTS__EXCLUDE_PROVIDERS=["TensorrtExecutionProvider","CUDAExecutionProvider"]
       - LOG_LEVEL=info
       - ENABLE_UI=false
@@ -57,12 +57,6 @@ services:
       - pockettts-cache:/home/pockettts/.cache/huggingface
       - pockettts-voice-cache-de:/app/voice_cache
       - ./voices-de:/app/voices
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:49112/health')"]
       interval: 30s
