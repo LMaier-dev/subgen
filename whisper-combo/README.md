@@ -161,22 +161,55 @@ alba, anna, azelma, bill_boerst, caro_davy, charles, cosette, eponine, eve, fant
 
 #### Cloned voices
 
-Any WAV file placed in `/app/voices/` becomes available as a voice. Currently: `bernd_das_brot`
+Any WAV file placed in `voices-de/` (bind-mounted to `/app/voices/` in the container) becomes available as a voice. Currently: `bernd_das_brot`
 
-### Adding a cloned voice
+### Managing voices
+
+#### Adding a new cloned voice
+
+1. Place a WAV file in the `voices-de/` directory (next to `docker-compose.yml`):
+   ```bash
+   # WAV requirements: mono, 16-bit, 22050 Hz recommended, 10-30s of clean speech
+   cp my_voice.wav voices-de/
+   ```
+
+2. The voice is immediately available by filename (without extension). First request extracts speaker embeddings (~6s), subsequent calls use the cached `.safetensors` file (~0.5s):
+   ```bash
+   curl -X POST http://<host>:49112/v1/audio/speech \
+     -H "Content-Type: application/json" \
+     -d '{"model": "german", "voice": "my_voice", "input": "Test der neuen Stimme."}' \
+     --output test.mp3
+   ```
+
+3. For Home Assistant, add the voice name to `TTS_VOICES` in the `wyoming-openai-de` service environment, then recreate the container:
+   ```bash
+   docker compose up -d --force-recreate wyoming-openai-de
+   ```
+
+#### Replacing/updating a cloned voice
+
+1. Replace the WAV file in `voices-de/`:
+   ```bash
+   cp improved_voice.wav voices-de/bernd_das_brot.wav
+   ```
+
+2. Delete the cached embeddings so they get regenerated from the new audio:
+   ```bash
+   docker compose exec pockettts-de rm -f /app/voice_cache/bernd_das_brot.german.safetensors
+   ```
+
+3. Next TTS request will re-extract embeddings (~6s), then cache them for future calls.
+
+#### Removing a cloned voice
 
 ```bash
-# Copy a WAV file (mono, 16-bit, 22050 Hz recommended, 10-30s of clean speech)
-docker cp my_voice.wav pockettts-de:/app/voices/
-
-# First request with new voice triggers embedding extraction (~10s)
-curl -X POST http://<host>:49112/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"model": "german_24l", "voice": "my_voice", "input": "Test der neuen Stimme."}' \
-  --output test.mp3
-
-# Subsequent calls use cached embeddings (instant)
+rm voices-de/my_voice.wav
+docker compose exec pockettts-de rm -f /app/voice_cache/my_voice.german.safetensors
 ```
+
+#### Changing the default voice in Home Assistant
+
+The voice used by HA is configured per Voice Assistant in **Settings > Voice Assistants > (your assistant) > Text-to-Speech > Voice**. Any voice listed in `TTS_VOICES` of the Wyoming bridge will appear in the dropdown.
 
 ---
 
