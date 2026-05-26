@@ -978,11 +978,27 @@ def asr_task_worker(task_data: dict) -> None:
         delete_model()
 
 
+def _ensure_wav(audio_bytes: bytes, sample_rate: int = 16000, channels: int = 1, bits_per_sample: int = 16) -> bytes:
+    """Wrap raw int16 LE PCM bytes with a WAV header. Pass-through if already RIFF/WAVE."""
+    if len(audio_bytes) >= 12 and audio_bytes[:4] == b'RIFF' and audio_bytes[8:12] == b'WAVE':
+        return audio_bytes
+    import struct
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    data_size = len(audio_bytes)
+    header = (
+        b'RIFF' + struct.pack('<I', 36 + data_size) + b'WAVE'
+        + b'fmt ' + struct.pack('<IHHIIHH', 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample)
+        + b'data' + struct.pack('<I', data_size)
+    )
+    return header + audio_bytes
+
+
 def _asr_task_via_api(task: str, language: str, video_file: str, file_content: bytes, output_format: str, result_container, task_id: str) -> None:
     """Delegates an ASR task to the external Whisper API."""
     try:
         lang = language or whisper_api_language
-        filename = os.path.basename(video_file) if video_file else "audio.wav"
+        filename = "audio.wav"
 
         api_endpoint = whisper_api_url
         if task == "translate":
@@ -995,10 +1011,12 @@ def _asr_task_via_api(task: str, language: str, video_file: str, file_content: b
 
         logging.info(f"ASR task {task_id}: sending to external API at {api_endpoint}")
 
+        wav_bytes = _ensure_wav(file_content)
+
         with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
             response = client.post(
                 api_endpoint,
-                files={"file": (filename, file_content, "audio/wav")},
+                files={"file": (filename, wav_bytes, "audio/wav")},
                 data=data,
             )
             response.raise_for_status()
@@ -1078,12 +1096,41 @@ async def detect_language(
         # --- RUN IMMEDIATELY ---
         # EVENT LOOP BLOCK FIX: Offload heavy ops to background thread
         await asyncio.to_thread(start_model)
-        
+
+        if whisper_api_url:
+            filename = "audio.wav"
+            audio_bytes = await asyncio.to_thread(
+                extract_audio_segment_from_content,
+                file_content,
+                detect_lang_offset,
+                detect_lang_length
+            )
+
+            def _api_detect():
+                with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
+                    resp = client.post(
+                        whisper_api_url,
+                        files={"file": (filename, audio_bytes, "audio/wav")},
+                        data={"model": whisper_api_model, "response_format": "verbose_json"},
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+
+            api_result = await asyncio.to_thread(_api_detect)
+            detected = LanguageCode.from_string(api_result.get("language", ""))
+
+            logging.info(f"Detect Language Result (API): {detected.to_name()} ({detected.to_iso_639_1()})")
+
+            return {
+                "detected_language": detected.to_name(),
+                "language_code": detected.to_iso_639_1()
+            }
+
         if encode:
             audio_bytes = await asyncio.to_thread(
-                extract_audio_segment_from_content, 
-                file_content, 
-                detect_lang_offset, 
+                extract_audio_segment_from_content,
+                file_content,
+                detect_lang_offset,
                 detect_lang_length
             )
             audio_data = np.frombuffer(audio_bytes, np.int16).flatten().astype(np.float32) / 32768.0
@@ -1140,6 +1187,35 @@ def detect_language_from_upload(task_data: dict) -> None:
         )
         
         start_model()
+
+        if whisper_api_url:
+            filename = "audio.wav"
+            audio_bytes = extract_audio_segment_from_content(
+                file_content,
+                detect_lang_offset,
+                detect_lang_length
+            )
+
+            with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
+                resp = client.post(
+                    whisper_api_url,
+                    files={"file": (filename, audio_bytes, "audio/wav")},
+                    data={"model": whisper_api_model, "response_format": "verbose_json"},
+                )
+                resp.raise_for_status()
+                api_result = resp.json()
+
+            detected_language = LanguageCode.from_string(api_result.get("language", ""))
+            language_code = detected_language.to_iso_639_1()
+
+            logging.info(f"Detected language (API): {detected_language.to_name()} ({language_code}) - ID: {task_id}")
+
+            if result_container:
+                result_container.set_result({
+                    "detected_language": detected_language.to_name(),
+                    "language_code": language_code
+                })
+            return
 
         args = {}
         args['progress_callback'] = progress
@@ -1202,23 +1278,30 @@ def extract_audio_segment_from_content(audio_content: bytes, start_time: int, du
     Returns:
         Audio bytes of the extracted segment
     """
-    try: 
+    try:
         logging.info(f"Extracting audio segment: start_time={start_time}s, duration={duration}s")
-        
+
+        # Bazarr sends raw int16 LE PCM at 16kHz mono with no header; other callers
+        # may send a real container (WAV/MP4/etc). Hint ffmpeg if it's raw PCM.
+        is_riff = audio_content[:4] == b'RIFF'
+        input_kwargs = {'ss': start_time, 't': duration}
+        if not is_riff:
+            input_kwargs.update({'f': 's16le', 'ar': 16000, 'ac': 1})
+
         out, _ = (
             ffmpeg
-            .input('pipe:0', ss=start_time, t=duration)
+            .input('pipe:0', **input_kwargs)
             .output('pipe:1', format='wav', acodec='pcm_s16le', ar=16000)
             .run(input=audio_content, capture_stdout=True, capture_stderr=True)
         )
-        
+
         if not out:
             raise ValueError("FFmpeg output is empty")
-        
+
         return out
 
     except ffmpeg.Error as e:
-        logging.error(f"FFmpeg error: {e.stderr.decode()}")
+        logging.error(f"FFmpeg error: {e.stderr.decode()[:500]}")
         return audio_content # Fallback to original if extraction fails
     except Exception as e:
         logging.error(f"Error extracting audio segment: {str(e)}")
@@ -1238,18 +1321,30 @@ def detect_language_task(path, original_task_data=None):
         )
         
         start_model()
-        
+
         audio_segment = extract_audio_segment_to_memory(
-            path, 
-            detect_language_offset, 
+            path,
+            detect_language_offset,
             int(detect_language_length)
         )
-        
-        # FIX: Hide confusing progress bar and use from_string for ISO codes
-        result = model.transcribe(audio_segment, verbose=False)
-        detected_language = LanguageCode.from_string(result.language)
-        
-        logging.info(f"Detected language: {detected_language.to_name()}")
+
+        if whisper_api_url:
+            filename = "audio.wav"
+            with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
+                resp = client.post(
+                    whisper_api_url,
+                    files={"file": (filename, audio_segment, "audio/wav")},
+                    data={"model": whisper_api_model, "response_format": "verbose_json"},
+                )
+                resp.raise_for_status()
+                api_result = resp.json()
+            detected_language = LanguageCode.from_string(api_result.get("language", ""))
+            logging.info(f"Detected language (API): {detected_language.to_name()}")
+        else:
+            # FIX: Hide confusing progress bar and use from_string for ISO codes
+            result = model.transcribe(audio_segment, verbose=False)
+            detected_language = LanguageCode.from_string(result.language)
+            logging.info(f"Detected language: {detected_language.to_name()}")
 
     except Exception as e:
         logging.error(f"Error detecting language for file: {e}", exc_info=True)
