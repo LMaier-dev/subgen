@@ -9,8 +9,9 @@ services:
     environment:
       - STT_MODEL_TTL=-1
       - WHISPER__INFERENCE_DEVICE=cuda
-      - WHISPER__COMPUTE_TYPE=int8_float32
-      - WHISPER__NUM_WORKERS=4
+      - WHISPER__COMPUTE_TYPE=int8
+      - WHISPER__NUM_WORKERS=2
+      - WHISPER__BATCH_SIZE=1
       - UNSTABLE_ORT_OPTS__EXCLUDE_PROVIDERS=["TensorrtExecutionProvider","CUDAExecutionProvider"]
       - LOG_LEVEL=info
       - ENABLE_UI=false
@@ -131,7 +132,7 @@ services:
       - WHISPER_API_MODEL=Systran/faster-whisper-large-v3
       - WHISPER_API_LANGUAGE=de
       - WEBHOOKPORT=9000
-      - CONCURRENT_TRANSCRIPTIONS=2
+      - CONCURRENT_TRANSCRIPTIONS=1
       - WORD_LEVEL_HIGHLIGHT=False
       - DEBUG=True
       - USE_PATH_MAPPING=False
