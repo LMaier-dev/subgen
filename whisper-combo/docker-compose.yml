@@ -86,7 +86,7 @@ services:
       - TTS_OPENAI_URL=http://pockettts-de:49112/v1
       - TTS_MODELS=german
       - TTS_BACKEND=OPENAI
-      - TTS_VOICES=alba anna azelma bernd_das_brot cosette eponine fantine javert jean marius vera
+      - TTS_VOICES=alba anna azelma bill_boerst caro_davy charles cosette eponine eve fantine george jane javert jean marius mary michael paul peter_yearsley stuart_bell vera bernd_das_brot
     depends_on:
       speaches:
         condition: service_healthy
